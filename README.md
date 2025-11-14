@@ -25,10 +25,19 @@ python gerber_to_svg.py "input-file.gbr" --png
 
 This produces `input-file.gbr.png` (pixel raster of the rendered Gerber at the configured DPI).
 
+- **Include drill holes** — add an Excellon drill file with `--drill`:
+
+```
+python gerber_to_svg.py "input-file.gbr" --drill "drill-file.txt"
+```
+
+Drill holes will be rendered as red circles in the SVG output, with diameter matching the drill bit size. The drill file parser supports standard Excellon format with tool definitions (e.g., `T01C0.3000` for 0.3mm diameter) and metric/inch coordinate modes.
+
 **Behavior Notes**
 - The script parses Gerber with `pygerber` and renders shapes directly into a raster image using OpenCV, then traces contours to produce clean SVG paths.
 - Polarity-aware: clear regions are rendered as cutouts (holes) and dark regions as filled copper.
 - The vector output uses `fill-rule="evenodd"`, so nested shapes (black inside white inside black) are handled correctly.
+- Drill holes are parsed from Excellon format drill files and rendered in red in the SVG output (or as gray in PNG output).
 
 **Files**
 - `gerber_to_svg.py` — main script

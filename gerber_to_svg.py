@@ -19,11 +19,13 @@ from pygerber.gerberx3.state_enums import Polarity
 
 
 class GerberToSvg:
-    def __init__(self, input_file, output_file, output_format='svg'):
+    def __init__(self, input_file, output_file, output_format='svg', drill_file=None):
         self.input_file = input_file
         self.output_file = output_file
         self.output_format = output_format
+        self.drill_file = drill_file
         self.svg_elements = []
+        self.drill_holes = []  # List of (x, y, diameter) tuples
         self.min_x = None
         self.max_x = None
         self.min_y = None
@@ -44,9 +46,145 @@ class GerberToSvg:
             if polarity in (Polarity.Clear, Polarity.ClearRegion):
                 return "white"
         return "black"
+    
+    def parse_drill_file(self):
+        """Parse Excellon drill file and extract drill holes."""
+        if not self.drill_file:
+            return
+        
+        try:
+            with open(self.drill_file, 'r') as f:
+                lines = f.readlines()
+            
+            tools = {}  # Tool number -> diameter in mm
+            current_tool = None
+            metric = True
+            current_x = 0.0
+            current_y = 0.0
+            
+            # Extract file format (e.g. ;FILE_FORMAT=4:4) and zero suppression mode (LZ/TZ)
+            int_digits = 4
+            dec_digits = 4
+            zero_mode = 'LZ'  # Excellon header METRIC,LZ means leading zeros present, trailing zeros suppressed
+
+            for line in lines:
+                line = line.strip()
+
+                # Header parsing
+                if line.startswith(';FILE_FORMAT='):
+                    try:
+                        fmt = line.split('=')[1]
+                        parts = fmt.split(':')
+                        if len(parts) == 2:
+                            int_digits = int(parts[0])
+                            dec_digits = int(parts[1])
+                    except Exception:
+                        pass
+                if 'METRIC' in line:
+                    metric = True
+                elif 'INCH' in line:
+                    metric = False
+                if 'LZ' in line:
+                    zero_mode = 'LZ'
+                elif 'TZ' in line:
+                    zero_mode = 'TZ'
+
+                # Tool definition: T01F00S00C0.3000 or T01C0.3000
+                if line.startswith('T') and 'C' in line and not line.startswith('TYPE'):
+                    import re
+                    match = re.match(r'T(\d+).*C([\d.]+)', line)
+                    if match:
+                        tool_num = 'T' + match.group(1)
+                        diameter_str = match.group(2)
+                        try:
+                            diameter = float(diameter_str)
+                            if not metric:
+                                diameter *= 25.4
+                            tools[tool_num] = diameter
+                        except ValueError:
+                            pass
+                    continue
+
+                # Tool selection (e.g. T01)
+                if line.startswith('T') and 'C' not in line and len(line) <= 4:
+                    current_tool = line
+                    continue
+
+                # Coordinate lines start with X or Y
+                if (line.startswith('X') or line.startswith('Y')) and current_tool and current_tool in tools:
+                    x_str = None
+                    y_str = None
+                    if 'X' in line and 'Y' in line:
+                        parts = line.split('Y')
+                        x_str = parts[0][1:]
+                        y_str = parts[1]
+                    elif line.startswith('X'):
+                        x_str = line[1:]
+                    elif line.startswith('Y'):
+                        y_str = line[1:]
+
+                    def parse_coord(coord_str: str) -> float:
+                        # If explicit decimal point present, parse directly
+                        if '.' in coord_str:
+                            try:
+                                return float(coord_str)
+                            except ValueError:
+                                return 0.0
+                        length = len(coord_str)
+                        # LZ: leading zeros present, trailing zeros suppressed.
+                        # Take first int_digits as integer part, remainder as decimal part (right pad with zeros).
+                        if zero_mode == 'LZ':
+                            integer_part = coord_str[:int_digits].rjust(int_digits, '0')
+                            decimal_part = coord_str[int_digits:]
+                            decimal_part = decimal_part.ljust(dec_digits, '0')
+                        else:  # TZ: trailing zeros present, leading zeros suppressed.
+                            # Last dec_digits are decimal, rest integer (may be empty -> 0)
+                            if length <= dec_digits:
+                                # No integer part provided
+                                integer_part = '0'
+                                decimal_part = coord_str.rjust(dec_digits, '0')
+                            else:
+                                integer_part = coord_str[:-dec_digits]
+                                decimal_part = coord_str[-dec_digits:]
+                                integer_part = integer_part if integer_part else '0'
+                        try:
+                            value = int(integer_part) + int(decimal_part) / (10 ** dec_digits)
+                            return value
+                        except ValueError:
+                            return 0.0
+
+                    if x_str:
+                        current_x = parse_coord(x_str)
+                        if not metric:
+                            current_x *= 25.4
+                    if y_str:
+                        current_y = parse_coord(y_str)
+                        if not metric:
+                            current_y *= 25.4
+
+                    diameter = tools[current_tool]
+                    self.drill_holes.append((current_x, current_y, diameter))
+
+                    radius = diameter / 2
+                    if self.min_x is None or current_x - radius < self.min_x:
+                        self.min_x = current_x - radius
+                    if self.max_x is None or current_x + radius > self.max_x:
+                        self.max_x = current_x + radius
+                    if self.min_y is None or current_y - radius < self.min_y:
+                        self.min_y = current_y - radius
+                    if self.max_y is None or current_y + radius > self.max_y:
+                        self.max_y = current_y + radius
+            
+            print(f"Parsed {len(self.drill_holes)} drill holes from '{self.drill_file}'")
+        
+        except Exception as e:
+            print(f"Warning: Failed to parse drill file: {e}")
 
     def convert(self):
         try:
+            # Parse drill file first (if provided)
+            self.parse_drill_file()
+            
             # Read the Gerber file
             with open(self.input_file, 'r') as f:
                 source_code = f.read()
@@ -66,6 +204,25 @@ class GerberToSvg:
                 self.max_x = bbox.max_x.as_millimeters()
                 self.min_y = bbox.min_y.as_millimeters()
                 self.max_y = bbox.max_y.as_millimeters()
+
+            # If drill holes were parsed earlier, optionally translate origin to align with Gerber
+            if hasattr(self, 'drill_holes') and len(self.drill_holes) > 0:
+                try:
+                    drill_xs = [d[0] for d in self.drill_holes]
+                    drill_ys = [d[1] for d in self.drill_holes]
+                    drill_min_x = min(drill_xs)
+                    drill_min_y = min(drill_ys)
+                    origin_diff_x = abs(drill_min_x - float(self.min_x))
+                    origin_diff_y = abs(drill_min_y - float(self.min_y))
+                    if origin_diff_x > 20 or origin_diff_y > 20:
+                        dx = float(self.min_x) - drill_min_x
+                        dy = float(self.min_y) - drill_min_y
+                        print(f"Translating drill coordinates by offset ({dx:.2f}, {dy:.2f}) mm to match Gerber origin")
+                        self.drill_holes = [(x + dx, y + dy, dia) for (x, y, dia) in self.drill_holes]
+                    # Debug summary (can be gated behind verbosity later)
+                    # Debug bbox prints removed
+                except Exception as e:
+                    print(f"Warning: drill origin translation check failed: {e}")
             
             # Process each command
             for command in command_buffer.commands:
@@ -308,12 +465,19 @@ class GerberToSvg:
             print(f"PNG saved to: {output_path}")
             return
         
-        # Threshold to binary (black = copper, white = empty)
-        _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+        # Separate drill holes (gray, value 128) from copper (black, value 0)
+        # Create binary mask for copper (black areas)
+        _, copper_binary = cv2.threshold(img, 200, 255, cv2.THRESH_BINARY_INV)
+        
+        # Create binary mask for drill holes (gray areas around 128)
+        drill_binary = cv2.inRange(img, 100, 150)
         
         print(f"Tracing contours...")
-        # Find contours
-        contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        # Find copper contours
+        copper_contours, copper_hierarchy = cv2.findContours(copper_binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Find drill hole contours
+        drill_contours, drill_hierarchy = cv2.findContours(drill_binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         
         # Create new SVG with traced contours
         with open(output_path, 'w') as f:
@@ -326,11 +490,13 @@ class GerberToSvg:
             # Invert Y axis for SVG coordinate system
             center_y = (self.max_y + self.min_y) / 2
             f.write(f'<g transform="translate(0, {2 * center_y}) scale(1, -1)">\n')
-            
-            # Process contours with hierarchy
-            if hierarchy is not None and len(contours) > 0:
+
+            # Write copper group first
+            f.write('  <g id="copper">\n')
+            # Process copper contours with hierarchy
+            if copper_hierarchy is not None and len(copper_contours) > 0:
                 # hierarchy format: [Next, Previous, First_Child, Parent]
-                hierarchy = hierarchy[0]
+                copper_hierarchy = copper_hierarchy[0]
                 
                 # Process all contours recursively
                 processed = set()
@@ -344,36 +510,49 @@ class GerberToSvg:
                     path_parts = []
                     
                     # Add current contour
-                    path_parts.append(self.contour_to_path(contours[idx], scale, min_x, min_y, height))
+                    path_parts.append(self.contour_to_path(copper_contours[idx], scale, min_x, min_y, height))
                     
                     # Process all children (holes at depth+1, filled at depth+2, etc.)
-                    child_idx = hierarchy[idx][2]
+                    child_idx = copper_hierarchy[idx][2]
                     while child_idx != -1:
                         # Recursively process child and its descendants
                         child_parts = process_contour_tree(child_idx, depth + 1)
                         path_parts.extend(child_parts)
-                        child_idx = hierarchy[child_idx][0]  # Next sibling
+                        child_idx = copper_hierarchy[child_idx][0]  # Next sibling
                     
                     return path_parts
                 
                 # Process all top-level contours (parent = -1)
-                for i in range(len(contours)):
-                    if hierarchy[i][3] == -1 and i not in processed:
+                for i in range(len(copper_contours)):
+                    if copper_hierarchy[i][3] == -1 and i not in processed:
                         path_parts = process_contour_tree(i, 0)
                         if path_parts:
                             path_d = " ".join(path_parts)
-                            f.write(f'  <path d="{path_d}" fill="black" fill-rule="evenodd" />\n')
+                            f.write(f'    <path d="{path_d}" fill="black" fill-rule="evenodd" />\n')
+            f.write('  </g>\n')
+
+            # Process drill holes in a separate group written AFTER copper so they appear on top
+            f.write('  <g id="drills">\n')
+            # If we have parsed drill file data, emit exact circles (cx,cy in mm, r in mm)
+            if hasattr(self, 'drill_holes') and len(self.drill_holes) > 0:
+                for (dx, dy, dia) in self.drill_holes:
+                    r = dia / 2.0
+                    f.write(f'    <circle cx="{dx:.5f}" cy="{dy:.5f}" r="{r:.5f}" fill="red" stroke="red" stroke-width="0.1" />\n')
+            # If no drill file provided, do not emit traced drill contours (do nothing)
+            f.write('  </g>\n')
             
             f.write("</g>\n")
             f.write("</svg>\n")
         
-        print(f"Traced {len(contours)} contours")
+        drill_count = len(self.drill_holes) if hasattr(self, 'drill_holes') else 0
+        print(f"Traced {len(copper_contours)} copper contours and {drill_count} drill holes")
     
     def render_svg_elements_to_image(self, img, scale, min_x, min_y, width, height):
         """Render SVG elements directly to a numpy image using OpenCV."""
         import xml.etree.ElementTree as ET
         import re
         
+        # First render all Gerber elements
         for element in self.svg_elements:
             # Parse the element
             try:
@@ -436,6 +615,9 @@ class GerberToSvg:
             except Exception as e:
                 print(f"Warning: Could not render element: {e}")
                 continue
+        
+        # Drill holes are not painted into the raster image. They are emitted
+        # as <circle> elements in the SVG output when a drill file is provided.
     
     def parse_svg_path(self, d, scale, min_x, min_y):
         """Parse SVG path data and convert to pixel coordinates."""
@@ -509,13 +691,14 @@ def main():
     parser = argparse.ArgumentParser(description="Convert a Gerber file to an SVG or PNG image.")
     parser.add_argument("input_file", help="Path to the input Gerber file.")
     parser.add_argument("--png", action="store_true", help="Output PNG instead of SVG.")
+    parser.add_argument("--drill", help="Optional Excellon drill file to overlay drill holes.")
     args = parser.parse_args()
 
     # Auto-generate output filename
     output_format = 'png' if args.png else 'svg'
     output_file = args.input_file + '.' + output_format
 
-    converter = GerberToSvg(args.input_file, output_file, output_format)
+    converter = GerberToSvg(args.input_file, output_file, output_format, drill_file=args.drill)
     converter.convert()
 
 
