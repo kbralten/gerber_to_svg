@@ -1,0 +1,4 @@
+pygerber
+opencv-python
+numpy
+Pillow

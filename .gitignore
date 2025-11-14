@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+.ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python tool caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# Generated debug images (from this project)
+*_debug.png
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Optional: ignore large generated PNGs (uncomment if desired)
+# *.png
