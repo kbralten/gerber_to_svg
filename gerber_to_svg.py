@@ -19,13 +19,17 @@ from pygerber.gerberx3.state_enums import Polarity
 
 
 class GerberToSvg:
-    def __init__(self, input_file, output_file, output_format='svg', drill_file=None, mirror_x=False):
+    def __init__(self, input_file, output_file, output_format='svg', drill_file=None, mirror_x=False, outline_file=None):
         self.input_file = input_file
         self.output_file = output_file
         self.output_format = output_format
         self.drill_file = drill_file
         self.mirror_x = mirror_x
+        self.outline_file = outline_file
         self.svg_elements = []
+        self.outline_elements = []
+        # Internal temporary target for handlers to append into (either svg_elements or outline_elements)
+        self._target_svg_list = None
         self.drill_holes = []  # List of (x, y, diameter) tuples
         self.min_x = None
         self.max_x = None
@@ -225,9 +229,43 @@ class GerberToSvg:
                 except Exception as e:
                     print(f"Warning: drill origin translation check failed: {e}")
             
-            # Process each command
+            # Process each command (main Gerber)
+            self._target_svg_list = self.svg_elements
             for command in command_buffer.commands:
                 self.process_draw_command(command)
+            self._target_svg_list = None
+
+            # If an outline Gerber was supplied, parse and collect its elements separately
+            if self.outline_file:
+                try:
+                    with open(self.outline_file, 'r') as f:
+                        outline_source = f.read()
+                    tokenizer_o = Tokenizer()
+                    tokens_o = tokenizer_o.tokenize(outline_source)
+                    parser_o = Parser2()
+                    command_buffer_o = parser_o.parse(tokens_o)
+                    # Expand bounding box to include outline
+                    bbox_o = command_buffer_o.get_bounding_box()
+                    if bbox_o:
+                        ox_min = bbox_o.min_x.as_millimeters()
+                        ox_max = bbox_o.max_x.as_millimeters()
+                        oy_min = bbox_o.min_y.as_millimeters()
+                        oy_max = bbox_o.max_y.as_millimeters()
+                        if self.min_x is None or ox_min < self.min_x:
+                            self.min_x = ox_min
+                        if self.max_x is None or ox_max > self.max_x:
+                            self.max_x = ox_max
+                        if self.min_y is None or oy_min < self.min_y:
+                            self.min_y = oy_min
+                        if self.max_y is None or oy_max > self.max_y:
+                            self.max_y = oy_max
+                    # Collect outline elements
+                    self._target_svg_list = self.outline_elements
+                    for command in command_buffer_o.commands:
+                        self.process_draw_command(command)
+                    self._target_svg_list = None
+                except Exception as e:
+                    print(f"Warning: Failed to parse outline file: {e}")
 
             # Write intermediate SVG with overlapping shapes
             temp_svg = tempfile.NamedTemporaryFile(mode='w', suffix='.svg', delete=False)
@@ -269,7 +307,8 @@ class GerberToSvg:
             x1, y1 = line.start_point.x.as_millimeters(), line.start_point.y.as_millimeters()
             x2, y2 = line.end_point.x.as_millimeters(), line.end_point.y.as_millimeters()
             stroke_color = self.get_stroke_color(line)
-            self.svg_elements.append(
+            target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+            target.append(
                 f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
                 f'stroke="{stroke_color}" stroke-width="{stroke_width}" stroke-linecap="round" />'
             )
@@ -303,7 +342,8 @@ class GerberToSvg:
                 sweep_flag = 1
 
             stroke_color = self.get_stroke_color(arc)
-            self.svg_elements.append(
+            target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+            target.append(
                 f'<path d="M {x1},{y1} A {radius},{radius} 0 {large_arc_flag} '
                 f'{sweep_flag} {x2},{y2}" '
                 f'stroke="{stroke_color}" stroke-width="{stroke_width}" fill="none" stroke-linecap="round" />'
@@ -351,7 +391,8 @@ class GerberToSvg:
         path_parts.append("Z")  # Close the path
         path_d = " ".join(path_parts)
         fill_color = self.get_fill_color(region)
-        self.svg_elements.append(f'<path d="{path_d}" fill="{fill_color}" />')
+        target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+        target.append(f'<path d="{path_d}" fill="{fill_color}" />')
 
     def handle_flash(self, flash):
         aperture = flash.aperture
@@ -360,7 +401,8 @@ class GerberToSvg:
 
         if isinstance(aperture, Circle2):
             r = aperture.diameter.as_millimeters() / 2
-            self.svg_elements.append(
+            target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+            target.append(
                 f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill_color}" />'
             )
         elif isinstance(aperture, Rectangle2):
@@ -368,7 +410,8 @@ class GerberToSvg:
             height = aperture.y_size.as_millimeters()
             x = cx - width / 2
             y = cy - height / 2
-            self.svg_elements.append(
+            target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+            target.append(
                 f'<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="{fill_color}" />'
             )
         elif isinstance(aperture, Obround2):
@@ -384,7 +427,8 @@ class GerberToSvg:
                 path_d += f"A {r},{r} 0 0 1 {x2},{cy + r} "
                 path_d += f"L {x1},{cy + r} "
                 path_d += f"A {r},{r} 0 0 1 {x1},{cy - r} Z"
-                self.svg_elements.append(f'<path d="{path_d}" fill="{fill_color}" />')
+                target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+                target.append(f'<path d="{path_d}" fill="{fill_color}" />')
             else:
                 # Vertical obround
                 r = width / 2
@@ -554,6 +598,25 @@ class GerberToSvg:
             # If no drill file provided, do not emit traced drill contours (do nothing)
             f.write('  </g>\n')
             
+            # If outline elements were provided, write them as their own group on top
+            if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0:
+                import re
+                f.write('  <g id="outline">\n')
+                for elem in self.outline_elements:
+                    # Remove explicit fills and replace with no fill
+                    elem_mod = re.sub(r'fill="[^"]*"', 'fill="none"', elem)
+                    # Replace or set stroke to blue for outline visibility
+                    if 'stroke=' in elem_mod:
+                        elem_mod = re.sub(r'stroke="[^"]*"', 'stroke="blue"', elem_mod)
+                    else:
+                        # Insert stroke attr before closing bracket
+                        elem_mod = elem_mod.replace('/>', ' stroke="blue" stroke-width="0.2"/>') if elem_mod.strip().endswith('/>') else elem_mod.replace('>', ' stroke="blue" stroke-width="0.2">')
+                    # Ensure stroke-width present
+                    if 'stroke-width' not in elem_mod:
+                        elem_mod = elem_mod.replace('stroke="blue"', 'stroke="blue" stroke-width="0.2"')
+                    f.write(f'    {elem_mod}\n')
+                f.write('  </g>\n')
+
             f.write("</g>\n")
             f.write("</svg>\n")
         
@@ -706,13 +769,14 @@ def main():
     parser.add_argument("--png", action="store_true", help="Output PNG instead of SVG.")
     parser.add_argument("--drill", help="Optional Excellon drill file to overlay drill holes.")
     parser.add_argument("--mirror-x", action="store_true", help="Mirror the final output in the X axis (useful for backside artwork).")
+    parser.add_argument("--outline", help="Optional Gerber file with board outline to include as a separate SVG group.")
     args = parser.parse_args()
 
     # Auto-generate output filename
     output_format = 'png' if args.png else 'svg'
     output_file = args.input_file + '.' + output_format
 
-    converter = GerberToSvg(args.input_file, output_file, output_format, drill_file=args.drill, mirror_x=args.mirror_x)
+    converter = GerberToSvg(args.input_file, output_file, output_format, drill_file=args.drill, mirror_x=args.mirror_x, outline_file=args.outline)
     converter.convert()
 
 

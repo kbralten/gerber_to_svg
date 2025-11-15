@@ -41,6 +41,14 @@ python gerber_to_svg.py "input-file.gbr" --drill "drill-file.txt" --mirror-x
 
 When used, the traced SVG output will be mirrored across the X axis (around the board center) so it can be used directly for backside processing.
 
+- **Include outline Gerber** — supply a Gerber outline file (for the board profile) with `--outline`. The outline will be added to the final SVG as a separate blue `outline` group so you can see the board edge clearly:
+
+```
+python gerber_to_svg.py "input-file.gbr" --outline "outline.gbr"
+```
+
+The outline is emitted as stroked paths (blue, thin) in the `outline` group on top of the copper and drill layers.
+
 **Behavior Notes**
 - The script parses Gerber with `pygerber` and renders shapes directly into a raster image using OpenCV, then traces contours to produce clean SVG paths.
 - Polarity-aware: clear regions are rendered as cutouts (holes) and dark regions as filled copper.
