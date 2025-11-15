@@ -19,11 +19,12 @@ from pygerber.gerberx3.state_enums import Polarity
 
 
 class GerberToSvg:
-    def __init__(self, input_file, output_file, output_format='svg', drill_file=None):
+    def __init__(self, input_file, output_file, output_format='svg', drill_file=None, mirror_x=False):
         self.input_file = input_file
         self.output_file = output_file
         self.output_format = output_format
         self.drill_file = drill_file
+        self.mirror_x = mirror_x
         self.svg_elements = []
         self.drill_holes = []  # List of (x, y, diameter) tuples
         self.min_x = None
@@ -459,8 +460,11 @@ class GerberToSvg:
         # Render each SVG element to the image
         self.render_svg_elements_to_image(img, scale, min_x, min_y, width, height)
         
-        # If PNG output requested, save and return
+        # If PNG output requested, optionally flip image horizontally then save and return
         if self.output_format == 'png':
+            if self.mirror_x:
+                # Flip horizontally
+                img = cv2.flip(img, 1)
             cv2.imwrite(output_path, img)
             print(f"PNG saved to: {output_path}")
             return
@@ -489,7 +493,16 @@ class GerberToSvg:
             
             # Invert Y axis for SVG coordinate system
             center_y = (self.max_y + self.min_y) / 2
-            f.write(f'<g transform="translate(0, {2 * center_y}) scale(1, -1)">\n')
+            # Build group transform; optionally mirror in X about the board center
+            transform_parts = []
+            if self.mirror_x:
+                center_x = (self.max_x + self.min_x) / 2
+                # Translate to double center_x then scale X by -1 to mirror horizontally
+                transform_parts.append(f"translate({2 * center_x}, 0) scale(-1, 1)")
+            # Always keep the existing Y inversion transform
+            transform_parts.append(f"translate(0, {2 * center_y}) scale(1, -1)")
+            transform_str = " ".join(transform_parts)
+            f.write(f'<g transform="{transform_str}">\n')
 
             # Write copper group first
             f.write('  <g id="copper">\n')
@@ -692,13 +705,14 @@ def main():
     parser.add_argument("input_file", help="Path to the input Gerber file.")
     parser.add_argument("--png", action="store_true", help="Output PNG instead of SVG.")
     parser.add_argument("--drill", help="Optional Excellon drill file to overlay drill holes.")
+    parser.add_argument("--mirror-x", action="store_true", help="Mirror the final output in the X axis (useful for backside artwork).")
     args = parser.parse_args()
 
     # Auto-generate output filename
     output_format = 'png' if args.png else 'svg'
     output_file = args.input_file + '.' + output_format
 
-    converter = GerberToSvg(args.input_file, output_file, output_format, drill_file=args.drill)
+    converter = GerberToSvg(args.input_file, output_file, output_format, drill_file=args.drill, mirror_x=args.mirror_x)
     converter.convert()
 
 

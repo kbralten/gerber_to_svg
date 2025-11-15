@@ -33,6 +33,14 @@ python gerber_to_svg.py "input-file.gbr" --drill "drill-file.txt"
 
 Drill holes will be rendered as red circles in the SVG output, with diameter matching the drill bit size. The drill file parser supports standard Excellon format with tool definitions (e.g., `T01C0.3000` for 0.3mm diameter) and metric/inch coordinate modes.
 
+- **Mirror final output for backside work** — useful when preparing artwork for the PCB underside. Add the `--mirror-x` flag to flip the final SVG (and PNG) horizontally:
+
+```
+python gerber_to_svg.py "input-file.gbr" --drill "drill-file.txt" --mirror-x
+```
+
+When used, the traced SVG output will be mirrored across the X axis (around the board center) so it can be used directly for backside processing.
+
 **Behavior Notes**
 - The script parses Gerber with `pygerber` and renders shapes directly into a raster image using OpenCV, then traces contours to produce clean SVG paths.
 - Polarity-aware: clear regions are rendered as cutouts (holes) and dark regions as filled copper.
