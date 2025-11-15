@@ -47,7 +47,15 @@ When used, the traced SVG output will be mirrored across the X axis (around the 
 python gerber_to_svg.py "input-file.gbr" --outline "outline.gbr"
 ```
 
-The outline is emitted as stroked paths (blue, thin) in the `outline` group on top of the copper and drill layers.
+The outline is emitted as stroked paths (blue, thin) in the `outline` group on top of the copper and drill layers. When an outline is provided, the copper layer is automatically clipped to the outline boundary (using SVG clipping paths), ensuring copper traces don't extend beyond the board edge.
+
+- **Invert copper layer for CNC/laser etching** — use `--invert` to flip the copper layer so dark areas represent copper to be removed (useful for milling or laser etching where you want to mark the material to remove):
+
+```
+python gerber_to_svg.py "input-file.gbr" --invert
+```
+
+When inverted, the output shows a filled rectangle (bounded by the outline if provided, or the bounding box) with the copper traces subtracted using SVG's `evenodd` fill rule. This makes the dark areas represent the material that should be removed, leaving the light (white) areas as the copper traces.
 
 **Behavior Notes**
 - The script parses Gerber with `pygerber` and renders shapes directly into a raster image using OpenCV, then traces contours to produce clean SVG paths.

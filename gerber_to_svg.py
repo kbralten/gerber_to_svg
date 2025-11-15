@@ -19,13 +19,14 @@ from pygerber.gerberx3.state_enums import Polarity
 
 
 class GerberToSvg:
-    def __init__(self, input_file, output_file, output_format='svg', drill_file=None, mirror_x=False, outline_file=None):
+    def __init__(self, input_file, output_file, output_format='svg', drill_file=None, mirror_x=False, outline_file=None, invert_copper=False):
         self.input_file = input_file
         self.output_file = output_file
         self.output_format = output_format
         self.drill_file = drill_file
         self.mirror_x = mirror_x
         self.outline_file = outline_file
+        self.invert_copper = invert_copper
         self.svg_elements = []
         self.outline_elements = []
         # Internal temporary target for handlers to append into (either svg_elements or outline_elements)
@@ -548,8 +549,77 @@ class GerberToSvg:
             transform_str = " ".join(transform_parts)
             f.write(f'<g transform="{transform_str}">\n')
 
-            # Write copper group first
-            f.write('  <g id="copper">\n')
+            # If outline is provided, define it as a clipping path for the copper layer
+            if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0:
+                f.write('  <defs>\n')
+                f.write('    <clipPath id="outlineClip">\n')
+                # Extract path data from outline elements and combine into a single continuous path
+                import re
+                path_commands = []
+                for elem in self.outline_elements:
+                    # Extract path, line elements and convert to path commands
+                    if '<path' in elem:
+                        # Extract d attribute
+                        match = re.search(r'd="([^"]*)"', elem)
+                        if match:
+                            d_attr = match.group(1)
+                            # Parse path commands and collect coordinate pairs
+                            # Replace M (moveto) with L (lineto) for all but the first segment
+                            if not path_commands:
+                                path_commands.append(d_attr)
+                            else:
+                                # Replace leading M with L to continue the path
+                                d_attr = d_attr.replace('M', 'L', 1)
+                                path_commands.append(d_attr)
+                    elif '<line' in elem:
+                        # Convert line to path commands
+                        x1_match = re.search(r'x1="([^"]*)"', elem)
+                        y1_match = re.search(r'y1="([^"]*)"', elem)
+                        x2_match = re.search(r'x2="([^"]*)"', elem)
+                        y2_match = re.search(r'y2="([^"]*)"', elem)
+                        if all([x1_match, y1_match, x2_match, y2_match]):
+                            if not path_commands:
+                                path_commands.append(f"M {x1_match.group(1)},{y1_match.group(1)} L {x2_match.group(1)},{y2_match.group(1)}")
+                            else:
+                                # Continue path with L instead of M
+                                path_commands.append(f"L {x2_match.group(1)},{y2_match.group(1)}")
+                
+                # Combine all path segments into a single closed path
+                if path_commands:
+                    combined_path = ' '.join(path_commands) + ' Z'
+                    f.write(f'      <path d="{combined_path}" fill-rule="evenodd" />\n')
+                
+                f.write('    </clipPath>\n')
+                f.write('  </defs>\n')
+
+            # Write copper group first (with optional clipping)
+            clip_attr = ' clip-path="url(#outlineClip)"' if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0 else ''
+            f.write(f'  <g id="copper"{clip_attr}>\n')
+            
+            # If invert_copper is enabled, create an outer boundary and subtract copper
+            if self.invert_copper:
+                # Determine outer boundary: use outline elements if available, else bounding box
+                if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0:
+                    # Start path with outline elements (which should form closed boundary)
+                    # We need to extract path data from outline_elements and prepend it
+                    # For simplicity, we'll render outline contours into the raster and trace them
+                    # But for now, use bounding box as fallback
+                    # TODO: Could improve by parsing outline_elements path data
+                    bbox_x = float(self.min_x)
+                    bbox_y = float(self.min_y)
+                    bbox_w = float(self.max_x - self.min_x)
+                    bbox_h = float(self.max_y - self.min_y)
+                    f.write(f'    <!-- Inverted copper: boundary with copper subtracted -->\\n')
+                    f.write(f'    <path d="M {bbox_x},{bbox_y} L {bbox_x + bbox_w},{bbox_y} L {bbox_x + bbox_w},{bbox_y + bbox_h} L {bbox_x},{bbox_y + bbox_h} Z ')
+                else:
+                    # Use bounding box rectangle as outer boundary
+                    bbox_x = float(self.min_x)
+                    bbox_y = float(self.min_y)
+                    bbox_w = float(self.max_x - self.min_x)
+                    bbox_h = float(self.max_y - self.min_y)
+                    f.write(f'    <!-- Inverted copper: bbox boundary with copper subtracted -->\\n')
+                    f.write(f'    <path d="M {bbox_x},{bbox_y} L {bbox_x + bbox_w},{bbox_y} L {bbox_x + bbox_w},{bbox_y + bbox_h} L {bbox_x},{bbox_y + bbox_h} Z ')
+            
             # Process copper contours with hierarchy
             if copper_hierarchy is not None and len(copper_contours) > 0:
                 # hierarchy format: [Next, Previous, First_Child, Parent]
@@ -585,7 +655,17 @@ class GerberToSvg:
                         path_parts = process_contour_tree(i, 0)
                         if path_parts:
                             path_d = " ".join(path_parts)
-                            f.write(f'    <path d="{path_d}" fill="black" fill-rule="evenodd" />\n')
+                            if self.invert_copper:
+                                # Append copper contours to the outer boundary path for subtraction via evenodd
+                                f.write(path_d + ' ')
+                            else:
+                                # Normal mode: emit each copper region as separate path
+                                f.write(f'    <path d="{path_d}" fill="black" fill-rule="evenodd" />\n')
+            
+            # Close the inverted path if inversion is enabled
+            if self.invert_copper:
+                f.write('" fill="black" fill-rule="evenodd" />\n')
+            
             f.write('  </g>\n')
 
             # Process drill holes in a separate group written AFTER copper so they appear on top
@@ -770,13 +850,14 @@ def main():
     parser.add_argument("--drill", help="Optional Excellon drill file to overlay drill holes.")
     parser.add_argument("--mirror-x", action="store_true", help="Mirror the final output in the X axis (useful for backside artwork).")
     parser.add_argument("--outline", help="Optional Gerber file with board outline to include as a separate SVG group.")
+    parser.add_argument("--invert", action="store_true", help="Invert the copper layer (dark areas become the copper to remove, useful for CNC/laser etching).")
     args = parser.parse_args()
 
     # Auto-generate output filename
     output_format = 'png' if args.png else 'svg'
     output_file = args.input_file + '.' + output_format
 
-    converter = GerberToSvg(args.input_file, output_file, output_format, drill_file=args.drill, mirror_x=args.mirror_x, outline_file=args.outline)
+    converter = GerberToSvg(args.input_file, output_file, output_format, drill_file=args.drill, mirror_x=args.mirror_x, outline_file=args.outline, invert_copper=args.invert)
     converter.convert()
 
 
