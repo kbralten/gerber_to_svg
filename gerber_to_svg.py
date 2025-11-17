@@ -549,12 +549,10 @@ class GerberToSvg:
             transform_str = " ".join(transform_parts)
             f.write(f'<g transform="{transform_str}">\n')
 
-            # If outline is provided, define it as a clipping path for the copper layer
+            # Extract outline path data if available - will be used for boundary in inversion or as mask geometry
+            import re
+            outline_path_data = None
             if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0:
-                f.write('  <defs>\n')
-                f.write('    <clipPath id="outlineClip">\n')
-                # Extract path data from outline elements and combine into a single continuous path
-                import re
                 path_commands = []
                 for elem in self.outline_elements:
                     # Extract path, line elements and convert to path commands
@@ -563,7 +561,6 @@ class GerberToSvg:
                         match = re.search(r'd="([^"]*)"', elem)
                         if match:
                             d_attr = match.group(1)
-                            # Parse path commands and collect coordinate pairs
                             # Replace M (moveto) with L (lineto) for all but the first segment
                             if not path_commands:
                                 path_commands.append(d_attr)
@@ -586,31 +583,18 @@ class GerberToSvg:
                 
                 # Combine all path segments into a single closed path
                 if path_commands:
-                    combined_path = ' '.join(path_commands) + ' Z'
-                    f.write(f'      <path d="{combined_path}" fill-rule="evenodd" />\n')
-                
-                f.write('    </clipPath>\n')
-                f.write('  </defs>\n')
+                    outline_path_data = ' '.join(path_commands) + ' Z'
 
-            # Write copper group first (with optional clipping)
-            clip_attr = ' clip-path="url(#outlineClip)"' if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0 else ''
-            f.write(f'  <g id="copper"{clip_attr}>\n')
+            # Write copper group (no clipping - will use mask geometry directly in paths)
+            f.write(f'  <g id="copper">\n')
             
             # If invert_copper is enabled, create an outer boundary and subtract copper
             if self.invert_copper:
-                # Determine outer boundary: use outline elements if available, else bounding box
-                if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0:
-                    # Start path with outline elements (which should form closed boundary)
-                    # We need to extract path data from outline_elements and prepend it
-                    # For simplicity, we'll render outline contours into the raster and trace them
-                    # But for now, use bounding box as fallback
-                    # TODO: Could improve by parsing outline_elements path data
-                    bbox_x = float(self.min_x)
-                    bbox_y = float(self.min_y)
-                    bbox_w = float(self.max_x - self.min_x)
-                    bbox_h = float(self.max_y - self.min_y)
-                    f.write(f'    <!-- Inverted copper: boundary with copper subtracted -->\\n')
-                    f.write(f'    <path d="M {bbox_x},{bbox_y} L {bbox_x + bbox_w},{bbox_y} L {bbox_x + bbox_w},{bbox_y + bbox_h} L {bbox_x},{bbox_y + bbox_h} Z ')
+                # Determine outer boundary: use outline path if available, else bounding box
+                if outline_path_data:
+                    # Use outline path as the boundary
+                    f.write(f'    <!-- Inverted copper: outline boundary with copper subtracted -->\\n')
+                    f.write(f'    <path d="{outline_path_data} ')
                 else:
                     # Use bounding box rectangle as outer boundary
                     bbox_x = float(self.min_x)
@@ -660,6 +644,8 @@ class GerberToSvg:
                                 f.write(path_d + ' ')
                             else:
                                 # Normal mode: emit each copper region as separate path
+                                # Note: Copper should already be within outline bounds from Gerber file
+                                # We don't use clipPath since it's not universally supported
                                 f.write(f'    <path d="{path_d}" fill="black" fill-rule="evenodd" />\n')
             
             # Close the inverted path if inversion is enabled
@@ -682,19 +668,39 @@ class GerberToSvg:
             if hasattr(self, 'outline_elements') and len(self.outline_elements) > 0:
                 import re
                 f.write('  <g id="outline">\n')
+                # Combine outline elements into a single continuous closed path
+                path_commands = []
                 for elem in self.outline_elements:
-                    # Remove explicit fills and replace with no fill
-                    elem_mod = re.sub(r'fill="[^"]*"', 'fill="none"', elem)
-                    # Replace or set stroke to blue for outline visibility
-                    if 'stroke=' in elem_mod:
-                        elem_mod = re.sub(r'stroke="[^"]*"', 'stroke="blue"', elem_mod)
-                    else:
-                        # Insert stroke attr before closing bracket
-                        elem_mod = elem_mod.replace('/>', ' stroke="blue" stroke-width="0.2"/>') if elem_mod.strip().endswith('/>') else elem_mod.replace('>', ' stroke="blue" stroke-width="0.2">')
-                    # Ensure stroke-width present
-                    if 'stroke-width' not in elem_mod:
-                        elem_mod = elem_mod.replace('stroke="blue"', 'stroke="blue" stroke-width="0.2"')
-                    f.write(f'    {elem_mod}\n')
+                    # Extract path, line elements and convert to path commands
+                    if '<path' in elem:
+                        # Extract d attribute
+                        match = re.search(r'd="([^"]*)"', elem)
+                        if match:
+                            d_attr = match.group(1)
+                            # Replace M (moveto) with L (lineto) for all but the first segment
+                            if not path_commands:
+                                path_commands.append(d_attr)
+                            else:
+                                # Replace leading M with L to continue the path
+                                d_attr = d_attr.replace('M', 'L', 1)
+                                path_commands.append(d_attr)
+                    elif '<line' in elem:
+                        # Convert line to path commands
+                        x1_match = re.search(r'x1="([^"]*)"', elem)
+                        y1_match = re.search(r'y1="([^"]*)"', elem)
+                        x2_match = re.search(r'x2="([^"]*)"', elem)
+                        y2_match = re.search(r'y2="([^"]*)"', elem)
+                        if all([x1_match, y1_match, x2_match, y2_match]):
+                            if not path_commands:
+                                path_commands.append(f"M {x1_match.group(1)},{y1_match.group(1)} L {x2_match.group(1)},{y2_match.group(1)}")
+                            else:
+                                # Continue path with L instead of M
+                                path_commands.append(f"L {x2_match.group(1)},{y2_match.group(1)}")
+                
+                # Write combined continuous path with outline styling
+                if path_commands:
+                    combined_path = ' '.join(path_commands) + ' Z'
+                    f.write(f'    <path d="{combined_path}" fill="none" stroke="blue" stroke-width="0.2" />\n')
                 f.write('  </g>\n')
 
             f.write("</g>\n")
