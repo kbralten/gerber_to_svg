@@ -236,17 +236,18 @@ class GerberToSvg:
                     drill_ys = [d[1] for d in self.drill_holes]
                     drill_min_x = min(drill_xs)
                     drill_min_y = min(drill_ys)
-                    origin_diff_x = abs(drill_min_x - float(self.min_x))
-                    origin_diff_y = abs(drill_min_y - float(self.min_y))
-                    if origin_diff_x > 20 or origin_diff_y > 20:
-                        dx = float(self.min_x) - drill_min_x
-                        dy = float(self.min_y) - drill_min_y
-                        print(
-                            f"Translating drill coordinates by offset ({
-                                dx:.2f}, {
-                                dy:.2f}) mm to match Gerber origin")
-                        self.drill_holes = [(x + dx, y + dy, dia)
-                                            for (x, y, dia) in self.drill_holes]
+                    if self.min_x is not None and self.min_y is not None:
+                        origin_diff_x = abs(drill_min_x - float(self.min_x))
+                        origin_diff_y = abs(drill_min_y - float(self.min_y))
+                        if origin_diff_x > 20 or origin_diff_y > 20:
+                            dx = float(self.min_x) - drill_min_x
+                            dy = float(self.min_y) - drill_min_y
+                            print(
+                                f"Translating drill coordinates by offset ({
+                                    dx:.2f}, {
+                                    dy:.2f}) mm to match Gerber origin")
+                            self.drill_holes = [(x + dx, y + dy, dia)
+                                                for (x, y, dia) in self.drill_holes]
                     # Debug summary (can be gated behind verbosity later)
                     # Debug bbox prints removed
                 except Exception as e:
@@ -360,7 +361,8 @@ class GerberToSvg:
             angle_diff = angle2 - angle1
 
             # Normalize angle difference
-            if arc.is_clockwise:
+            is_clockwise = getattr(arc, 'is_clockwise', False)
+            if is_clockwise:
                 if angle_diff > 0:
                     angle_diff -= 2 * math.pi
                 large_arc_flag = 1 if abs(angle_diff) > math.pi else 0
@@ -406,14 +408,15 @@ class GerberToSvg:
                 ), segment.center_point.y.as_millimeters()
                 x1, y1 = segment.start_point.x.as_millimeters(
                 ), segment.start_point.y.as_millimeters()
-                radius = ((x1 - center_x)**2 + (y1 - center_y)**2)**0.5
+                radius = float(((float(x1) - float(center_x))**2 + (float(y1) - float(center_y))**2)**0.5)
 
                 import math
                 angle1 = math.atan2(y1 - center_y, x1 - center_x)
                 angle2 = math.atan2(y2 - center_y, x2 - center_x)
                 angle_diff = angle2 - angle1
 
-                if segment.is_clockwise:
+                is_clockwise = getattr(segment, 'is_clockwise', False)
+                if is_clockwise:
                     if angle_diff > 0:
                         angle_diff -= 2 * math.pi
                     large_arc_flag = 1 if abs(angle_diff) > math.pi else 0
@@ -563,7 +566,7 @@ class GerberToSvg:
         _, copper_binary = cv2.threshold(img, 200, 255, cv2.THRESH_BINARY_INV)
 
         # Create binary mask for drill holes (gray areas around 128)
-        drill_binary = cv2.inRange(img, 100, 150)
+        drill_binary = cv2.inRange(img, np.array([100]), np.array([150]))
 
         print("Tracing contours...")
         # Find copper contours
@@ -628,7 +631,7 @@ class GerberToSvg:
                         y1_match = re.search(r'y1="([^"]*)"', elem)
                         x2_match = re.search(r'x2="([^"]*)"', elem)
                         y2_match = re.search(r'y2="([^"]*)"', elem)
-                        if all([x1_match, y1_match, x2_match, y2_match]):
+                        if x1_match and y1_match and x2_match and y2_match:
                             if not path_commands:
                                 path_commands.append(
                                     f"M {
@@ -784,7 +787,7 @@ class GerberToSvg:
                         y1_match = re.search(r'y1="([^"]*)"', elem)
                         x2_match = re.search(r'x2="([^"]*)"', elem)
                         y2_match = re.search(r'y2="([^"]*)"', elem)
-                        if all([x1_match, y1_match, x2_match, y2_match]):
+                        if x1_match and y1_match and x2_match and y2_match:
                             if not path_commands:
                                 path_commands.append(
                                     f"M {
@@ -832,9 +835,14 @@ class GerberToSvg:
                 color = 0 if fill == 'black' else 255  # black = 0, white = 255
 
                 if tag == 'circle':
-                    cx = float(elem.get('cx'))
-                    cy = float(elem.get('cy'))
-                    r = float(elem.get('r'))
+                    cx_str = elem.get('cx')
+                    cy_str = elem.get('cy')
+                    r_str = elem.get('r')
+                    if not (cx_str and cy_str and r_str):
+                        continue
+                    cx = float(cx_str)
+                    cy = float(cy_str)
+                    r = float(r_str)
 
                     # Convert to pixel coordinates
                     px = int((cx - min_x) * scale)
@@ -844,10 +852,16 @@ class GerberToSvg:
                     cv2.circle(img, (px, py), pr, color, -1)
 
                 elif tag == 'rect':
-                    x = float(elem.get('x'))
-                    y = float(elem.get('y'))
-                    w = float(elem.get('width'))
-                    h = float(elem.get('height'))
+                    x_str = elem.get('x')
+                    y_str = elem.get('y')
+                    w_str = elem.get('width')
+                    h_str = elem.get('height')
+                    if not (x_str and y_str and w_str and h_str):
+                        continue
+                    x = float(x_str)
+                    y = float(y_str)
+                    w = float(w_str)
+                    h = float(h_str)
 
                     # Convert to pixel coordinates
                     px1 = int((x - min_x) * scale)
@@ -858,11 +872,17 @@ class GerberToSvg:
                     cv2.rectangle(img, (px1, py1), (px2, py2), color, -1)
 
                 elif tag == 'line':
-                    x1 = float(elem.get('x1'))
-                    y1 = float(elem.get('y1'))
-                    x2 = float(elem.get('x2'))
-                    y2 = float(elem.get('y2'))
-                    stroke_width = float(elem.get('stroke-width', 1))
+                    x1_str = elem.get('x1')
+                    y1_str = elem.get('y1')
+                    x2_str = elem.get('x2')
+                    y2_str = elem.get('y2')
+                    if not (x1_str and y1_str and x2_str and y2_str):
+                        continue
+                    x1 = float(x1_str)
+                    y1 = float(y1_str)
+                    x2 = float(x2_str)
+                    y2 = float(y2_str)
+                    stroke_width = float(elem.get('stroke-width', '1'))
                     stroke = elem.get('stroke', 'black')
                     color = 0 if stroke == 'black' else 255
 
