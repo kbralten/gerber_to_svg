@@ -33,6 +33,18 @@ python gerber_to_svg.py "input-file.gbr" --drill "drill-file.txt"
 
 Drill holes will be rendered as red circles in the SVG output, with diameter matching the drill bit size. The drill file parser supports standard Excellon format with tool definitions (e.g., `T01C0.3000` for 0.3mm diameter) and metric/inch coordinate modes.
 
+- **Drill diameter offset (`--drill-offset`)** — apply an offset to the parsed drill diameters when emitting drill circles:
+
+```
+python gerber_to_svg.py "input-file.gbr" --drill "drill-file.txt" --drill-offset 0.1
+```
+
+Use a positive value to enlarge holes (for example to compensate for masking/kerf when plating or soldermask), or a negative value to reduce holes. The offset is specified in millimeters and defaults to `0.0`.
+
+Notes:
+- If a negative offset results in a negative diameter for a given tool, the diameter will be clamped to `0.0` (no negative sizes are emitted).
+- The offset is applied to the tool diameter parsed from the drill file before any unit conversion (the implementation ensures units are handled correctly and the final diameter is in millimeters).
+
 - **Mirror final output for backside work** — useful when preparing artwork for the PCB underside. Add the `--mirror-x` flag to flip the final SVG (and PNG) horizontally:
 
 ```

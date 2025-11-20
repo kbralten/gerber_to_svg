@@ -25,7 +25,8 @@ class GerberToSvg:
             drill_file=None,
             mirror_x=False,
             outline_file=None,
-            invert_copper=False):
+            invert_copper=False,
+            drill_offset=0.0):
         self.input_file = input_file
         self.output_file = output_file
         self.output_format = output_format
@@ -33,6 +34,7 @@ class GerberToSvg:
         self.mirror_x = mirror_x
         self.outline_file = outline_file
         self.invert_copper = invert_copper
+        self.drill_offset = drill_offset
         self.svg_elements = []
         self.outline_elements = []
         # Internal temporary target for handlers to append into (either
@@ -117,6 +119,10 @@ class GerberToSvg:
                             diameter = float(diameter_str)
                             if not metric:
                                 diameter *= 25.4
+                            # Apply offset
+                            diameter += self.drill_offset
+                            if diameter < 0:
+                                diameter = 0.0
                             tools[tool_num] = diameter
                         except ValueError:
                             pass
@@ -1000,6 +1006,11 @@ def main():
         "--invert",
         action="store_true",
         help="Invert the copper layer (dark areas become the copper to remove, useful for CNC/laser etching).")
+    parser.add_argument(
+        "--drill-offset",
+        type=float,
+        default=0.0,
+        help="Offset to apply to drill hole diameter in mm (positive to increase, negative to decrease). Default is 0.")
     args = parser.parse_args()
 
     # Auto-generate output filename
@@ -1013,7 +1024,8 @@ def main():
         drill_file=args.drill,
         mirror_x=args.mirror_x,
         outline_file=args.outline,
-        invert_copper=args.invert)
+        invert_copper=args.invert,
+        drill_offset=args.drill_offset)
     converter.convert()
 
 
