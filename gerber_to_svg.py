@@ -26,7 +26,8 @@ class GerberToSvg:
             mirror_x=False,
             outline_file=None,
             invert_copper=False,
-            drill_offset=0.0):
+            drill_offset=0.0,
+            corner_radius=0.0):
         self.input_file = input_file
         self.output_file = output_file
         self.output_format = output_format
@@ -35,6 +36,7 @@ class GerberToSvg:
         self.outline_file = outline_file
         self.invert_copper = invert_copper
         self.drill_offset = drill_offset
+        self.corner_radius = corner_radius
         self.svg_elements = []
         self.outline_elements = []
         # Internal temporary target for handlers to append into (either
@@ -963,22 +965,119 @@ class GerberToSvg:
         return points
 
     def contour_to_path(self, contour, scale, min_x, min_y, height):
-        """Convert OpenCV contour to SVG path data."""
+        """Convert OpenCV contour to SVG path data with optional corner rounding."""
+        import math
         # Simplify contour to reduce number of points
         epsilon = 0.5  # Adjust for more/less simplification
         approx = cv2.approxPolyDP(contour, epsilon, True)
 
-        path_parts = []
-        for i, point in enumerate(approx):
-            # Convert pixel coordinates back to mm
+        # Convert all points to mm coordinates
+        points = []
+        for point in approx:
             px, py = point[0]
             x = (px / scale) + min_x
             y = (py / scale) + min_y
+            points.append((x, y))
+
+        if len(points) < 3:
+            # Not enough points to form a polygon
+            return ""
+
+        # If no corner radius, use simple path
+        if self.corner_radius <= 0:
+            path_parts = []
+            for i, (x, y) in enumerate(points):
+                if i == 0:
+                    path_parts.append(f"M {x:.5f},{y:.5f}")
+                else:
+                    path_parts.append(f"L {x:.5f},{y:.5f}")
+            path_parts.append("Z")
+            return " ".join(path_parts)
+
+        # Apply corner rounding
+        r = self.corner_radius
+        path_parts = []
+        n = len(points)
+
+        for i in range(n):
+            # Get previous, current, and next points (wrapping around)
+            p_prev = points[(i - 1) % n]
+            p_curr = points[i]
+            p_next = points[(i + 1) % n]
+
+            # Vectors from current point to neighbors
+            v1 = (p_prev[0] - p_curr[0], p_prev[1] - p_curr[1])
+            v2 = (p_next[0] - p_curr[0], p_next[1] - p_curr[1])
+
+            # Lengths of the edges
+            len1 = math.sqrt(v1[0]**2 + v1[1]**2)
+            len2 = math.sqrt(v2[0]**2 + v2[1]**2)
+
+            if len1 < 1e-9 or len2 < 1e-9:
+                # Degenerate edge, skip rounding
+                if i == 0:
+                    path_parts.append(f"M {p_curr[0]:.5f},{p_curr[1]:.5f}")
+                else:
+                    path_parts.append(f"L {p_curr[0]:.5f},{p_curr[1]:.5f}")
+                continue
+
+            # Unit vectors
+            u1 = (v1[0] / len1, v1[1] / len1)
+            u2 = (v2[0] / len2, v2[1] / len2)
+
+            # Calculate angle between edges (for determining arc parameters)
+            dot = u1[0] * u2[0] + u1[1] * u2[1]
+            dot = max(-1.0, min(1.0, dot))  # Clamp for numerical stability
+            angle = math.acos(dot)
+
+            # Distance from corner to tangent point
+            # For a fillet: d = r / tan(angle/2)
+            half_angle = angle / 2
+            if abs(math.sin(half_angle)) < 1e-9:
+                # Nearly straight line, no rounding needed
+                if i == 0:
+                    path_parts.append(f"M {p_curr[0]:.5f},{p_curr[1]:.5f}")
+                else:
+                    path_parts.append(f"L {p_curr[0]:.5f},{p_curr[1]:.5f}")
+                continue
+
+            # Avoid instability if half_angle is very close to 90 degrees (pi/2)
+            if abs(abs(half_angle) - (math.pi / 2)) < 1e-6:
+                # Angle is too close to 90 degrees, skip rounding
+                if i == 0:
+                    path_parts.append(f"M {p_curr[0]:.5f},{p_curr[1]:.5f}")
+                else:
+                    path_parts.append(f"L {p_curr[0]:.5f},{p_curr[1]:.5f}")
+                continue
+            d = r / math.tan(half_angle)
+
+            # Clamp d to not exceed half of either edge length
+            max_d = min(len1 / 2, len2 / 2)
+            if d > max_d:
+                d = max_d
+                # Recalculate effective radius for this corner
+                r_eff = d * math.tan(half_angle)
+            else:
+                r_eff = r
+
+            # Tangent points on each edge
+            t1 = (p_curr[0] + u1[0] * d, p_curr[1] + u1[1] * d)
+            t2 = (p_curr[0] + u2[0] * d, p_curr[1] + u2[1] * d)
+
+            # Determine sweep direction using cross product
+            cross = u1[0] * u2[1] - u1[1] * u2[0]
+            sweep_flag = 1 if cross < 0 else 0
 
             if i == 0:
-                path_parts.append(f"M {x:.5f},{y:.5f}")
+                # Start path at first tangent point
+                path_parts.append(f"M {t1[0]:.5f},{t1[1]:.5f}")
             else:
-                path_parts.append(f"L {x:.5f},{y:.5f}")
+                # Line to tangent point on incoming edge
+                path_parts.append(f"L {t1[0]:.5f},{t1[1]:.5f}")
+
+            # Arc to tangent point on outgoing edge
+            # The large-arc-flag is always 0 for corner fillets because the arc is always less than 180 degrees.
+            path_parts.append(f"A {r_eff:.5f},{r_eff:.5f} 0 0 {sweep_flag} {t2[0]:.5f},{t2[1]:.5f}")
 
         path_parts.append("Z")
         return " ".join(path_parts)
@@ -1011,6 +1110,11 @@ def main():
         type=float,
         default=0.0,
         help="Offset to apply to drill hole diameter in mm (positive to increase, negative to decrease). Default is 0.")
+    parser.add_argument(
+        "--corner-radius",
+        type=float,
+        default=0.0,
+        help="Radius in mm to apply to inside and outside corners of traced paths. Default is 0 (sharp corners).")
     args = parser.parse_args()
 
     # Auto-generate output filename
@@ -1025,7 +1129,8 @@ def main():
         mirror_x=args.mirror_x,
         outline_file=args.outline,
         invert_copper=args.invert,
-        drill_offset=args.drill_offset)
+        drill_offset=args.drill_offset,
+        corner_radius=args.corner_radius)
     converter.convert()
 
 

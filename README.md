@@ -45,6 +45,19 @@ Notes:
 - If a negative offset results in a negative diameter for a given tool, the diameter will be clamped to `0.0` (no negative sizes are emitted).
 - The offset is applied to the tool diameter parsed from the drill file before any unit conversion (the implementation ensures units are handled correctly and the final diameter is in millimeters).
 
+- **Corner radius (`--corner-radius`)** — apply rounding to inside and outside corners of traced copper paths:
+
+```
+python gerber_to_svg.py "input-file.gbr" --corner-radius 0.25
+```
+
+This applies a 0.25mm fillet radius to all corners in the output SVG. Both inside corners (concave) and outside corners (convex) are rounded. This is useful for:
+- Compensating for laser/CNC kerf on internal corners that would otherwise be too sharp to cut cleanly.
+- Creating smoother paths for milling or etching where sharp corners can cause tool chatter or burn marks.
+- Masking applications where rounded corners improve adhesion or reduce stress concentrations.
+
+The radius is specified in millimeters and defaults to `0.0` (sharp corners). If the specified radius is too large for a given corner (i.e., would overlap with adjacent corners), it is automatically clamped to fit.
+
 - **Mirror final output for backside work** — useful when preparing artwork for the PCB underside. Add the `--mirror-x` flag to flip the final SVG (and PNG) horizontally:
 
 ```
