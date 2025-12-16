@@ -13,6 +13,7 @@ from pygerber.gerberx3.parser2.commands2.region2 import Region2
 from pygerber.gerberx3.parser2.apertures2.circle2 import Circle2
 from pygerber.gerberx3.parser2.apertures2.rectangle2 import Rectangle2
 from pygerber.gerberx3.parser2.apertures2.obround2 import Obround2
+from pygerber.gerberx3.parser2.apertures2.macro2 import Macro2
 from pygerber.gerberx3.state_enums import Polarity
 
 
@@ -606,8 +607,26 @@ class GerberToSvg:
                 path_d += f"A {r},{r} 0 0 0 {cx + r},{y2} "
                 path_d += f"L {cx + r},{y1} "
                 path_d += f"A {r},{r} 0 0 0 {cx - r},{y1} Z"
-                self.svg_elements.append(
+                target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+                target.append(
                     f'<path d="{path_d}" fill="{fill_color}" />')
+        elif isinstance(aperture, Macro2):
+            # Macro aperture: use bounding box to render as a rectangle
+            bbox = aperture.get_bounding_box()
+            if bbox:
+                # Bounding box is relative to flash center (0,0)
+                min_x = float(bbox.min_x.as_millimeters())
+                max_x = float(bbox.max_x.as_millimeters())
+                min_y = float(bbox.min_y.as_millimeters())
+                max_y = float(bbox.max_y.as_millimeters())
+                # Translate to flash point
+                x = float(cx) + min_x
+                y = float(cy) + min_y
+                width = max_x - min_x
+                height = max_y - min_y
+                target = self._target_svg_list if self._target_svg_list is not None else self.svg_elements
+                target.append(
+                    f'<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="{fill_color}" />')
 
     def write_svg_to_file(self, filepath):
         """Write the intermediate SVG with overlapping shapes to a file."""
