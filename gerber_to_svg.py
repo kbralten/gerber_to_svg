@@ -356,10 +356,9 @@ class GerberToSvg:
         aperture = arc.aperture
         if isinstance(aperture, Circle2):
             stroke_width = aperture.diameter.as_millimeters()
-            x1, y1 = arc.start_point.x.as_millimeters(), arc.start_point.y.as_millimeters()
-            x2, y2 = arc.end_point.x.as_millimeters(), arc.end_point.y.as_millimeters()
-            center_x, center_y = arc.center_point.x.as_millimeters(
-            ), arc.center_point.y.as_millimeters()
+            x1, y1 = float(arc.start_point.x.as_millimeters()), float(arc.start_point.y.as_millimeters())
+            x2, y2 = float(arc.end_point.x.as_millimeters()), float(arc.end_point.y.as_millimeters())
+            center_x, center_y = float(arc.center_point.x.as_millimeters()), float(arc.center_point.y.as_millimeters())
             radius = ((x1 - center_x)**2 + (y1 - center_y)**2)**0.5
 
             # Calculate if it's a large arc (> 180 degrees)
