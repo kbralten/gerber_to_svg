@@ -64,6 +64,126 @@ class GerberToSvg:
                 return "white"
         return "black"
 
+    def build_outline_path_data(self):
+        """
+        Build SVG path data from outline elements, properly grouping connected
+        segments into separate closed subpaths. Returns None if no outline
+        elements.
+        """
+        import re
+
+        if not hasattr(self, 'outline_elements') or len(self.outline_elements) == 0:
+            return None
+
+        # Extract all line segments as (start_point, end_point) tuples
+        segments = []
+        tolerance = 1e-6  # Tolerance for point matching
+
+        for elem in self.outline_elements:
+            if '<path' in elem:
+                # Extract d attribute and parse path commands
+                match = re.search(r'd="([^"]*)"', elem)
+                if match:
+                    d_attr = match.group(1)
+                    # Parse the path: look for M x,y L x,y patterns
+                    # Split by command letters
+                    commands = re.findall(r'([MLZmlz])([^MLZmlz]*)', d_attr)
+                    current_x, current_y = 0.0, 0.0
+                    start_x, start_y = 0.0, 0.0
+                    for cmd, args in commands:
+                        args = args.strip()
+                        if cmd == 'M':
+                            coords = re.findall(r'[-+]?[0-9]*\.?[0-9]+', args)
+                            if len(coords) >= 2:
+                                current_x, current_y = float(coords[0]), float(coords[1])
+                                start_x, start_y = current_x, current_y
+                        elif cmd == 'L':
+                            coords = re.findall(r'[-+]?[0-9]*\.?[0-9]+', args)
+                            if len(coords) >= 2:
+                                new_x, new_y = float(coords[0]), float(coords[1])
+                                segments.append(((current_x, current_y), (new_x, new_y)))
+                                current_x, current_y = new_x, new_y
+                        elif cmd == 'Z':
+                            # Close path back to start
+                            if (current_x, current_y) != (start_x, start_y):
+                                segments.append(((current_x, current_y), (start_x, start_y)))
+                            current_x, current_y = start_x, start_y
+            elif '<line' in elem:
+                x1_m = re.search(r'x1="([^"]*)"', elem)
+                y1_m = re.search(r'y1="([^"]*)"', elem)
+                x2_m = re.search(r'x2="([^"]*)"', elem)
+                y2_m = re.search(r'y2="([^"]*)"', elem)
+                if x1_m and y1_m and x2_m and y2_m:
+                    x1, y1 = float(x1_m.group(1)), float(y1_m.group(1))
+                    x2, y2 = float(x2_m.group(1)), float(y2_m.group(1))
+                    segments.append(((x1, y1), (x2, y2)))
+
+        if not segments:
+            return None
+
+        def points_equal(p1, p2):
+            return abs(p1[0] - p2[0]) < tolerance and abs(p1[1] - p2[1]) < tolerance
+
+        # Group segments into closed shapes by connecting endpoints
+        shapes = []
+        remaining = list(segments)
+
+        while remaining:
+            # Start a new shape with the first remaining segment
+            shape = [remaining.pop(0)]
+            changed = True
+
+            while changed:
+                changed = False
+                shape_start = shape[0][0]
+                shape_end = shape[-1][1]
+
+                # Look for segments that connect to the end of the shape
+                for i, seg in enumerate(remaining):
+                    if points_equal(shape_end, seg[0]):
+                        # Segment connects at its start to shape end
+                        shape.append(remaining.pop(i))
+                        changed = True
+                        break
+                    elif points_equal(shape_end, seg[1]):
+                        # Segment connects at its end to shape end (reverse it)
+                        shape.append((seg[1], seg[0]))
+                        remaining.pop(i)
+                        changed = True
+                        break
+
+                if not changed:
+                    # Try connecting to the start of the shape
+                    for i, seg in enumerate(remaining):
+                        if points_equal(shape_start, seg[1]):
+                            # Segment end connects to shape start
+                            shape.insert(0, remaining.pop(i))
+                            changed = True
+                            break
+                        elif points_equal(shape_start, seg[0]):
+                            # Segment start connects to shape start (reverse it)
+                            shape.insert(0, (seg[1], seg[0]))
+                            remaining.pop(i)
+                            changed = True
+                            break
+
+            shapes.append(shape)
+
+        # Build SVG path data with separate subpaths for each shape
+        path_parts = []
+        for shape in shapes:
+            if not shape:
+                continue
+            # Start with M to the first point
+            start = shape[0][0]
+            subpath = f"M {start[0]},{start[1]}"
+            for seg in shape:
+                subpath += f" L {seg[1][0]},{seg[1][1]}"
+            subpath += " Z"
+            path_parts.append(subpath)
+
+        return ' '.join(path_parts) if path_parts else None
+
     def parse_drill_file(self):
         """Parse Excellon drill file and extract drill holes."""
         if not self.drill_file:
@@ -611,51 +731,7 @@ class GerberToSvg:
 
             # Extract outline path data if available - will be used for
             # boundary in inversion or as mask geometry
-            import re
-            outline_path_data = None
-            if hasattr(
-                    self, 'outline_elements') and len(
-                    self.outline_elements) > 0:
-                path_commands = []
-                for elem in self.outline_elements:
-                    # Extract path, line elements and convert to path commands
-                    if '<path' in elem:
-                        # Extract d attribute
-                        match = re.search(r'd="([^"]*)"', elem)
-                        if match:
-                            d_attr = match.group(1)
-                            # Replace M (moveto) with L (lineto) for all but
-                            # the first segment
-                            if not path_commands:
-                                path_commands.append(d_attr)
-                            else:
-                                # Replace leading M with L to continue the path
-                                d_attr = d_attr.replace('M', 'L', 1)
-                                path_commands.append(d_attr)
-                    elif '<line' in elem:
-                        # Convert line to path commands
-                        x1_match = re.search(r'x1="([^"]*)"', elem)
-                        y1_match = re.search(r'y1="([^"]*)"', elem)
-                        x2_match = re.search(r'x2="([^"]*)"', elem)
-                        y2_match = re.search(r'y2="([^"]*)"', elem)
-                        if x1_match and y1_match and x2_match and y2_match:
-                            if not path_commands:
-                                path_commands.append(
-                                    f"M {
-                                        x1_match.group(1)},{
-                                        y1_match.group(1)} L {
-                                        x2_match.group(1)},{
-                                        y2_match.group(1)}")
-                            else:
-                                # Continue path with L instead of M
-                                path_commands.append(
-                                    f"L {
-                                        x2_match.group(1)},{
-                                        y2_match.group(1)}")
-
-                # Combine all path segments into a single closed path
-                if path_commands:
-                    outline_path_data = ' '.join(path_commands) + ' Z'
+            outline_path_data = self.build_outline_path_data()
 
             # Write copper group (no clipping - will use mask geometry directly
             # in paths)
@@ -766,54 +842,11 @@ class GerberToSvg:
 
             # If outline elements were provided, write them as their own group
             # on top
-            if hasattr(
-                    self, 'outline_elements') and len(
-                    self.outline_elements) > 0:
-                import re
+            outline_path = self.build_outline_path_data()
+            if outline_path:
                 f.write('  <g id="outline">\n')
-                # Combine outline elements into a single continuous closed path
-                path_commands = []
-                for elem in self.outline_elements:
-                    # Extract path, line elements and convert to path commands
-                    if '<path' in elem:
-                        # Extract d attribute
-                        match = re.search(r'd="([^"]*)"', elem)
-                        if match:
-                            d_attr = match.group(1)
-                            # Replace M (moveto) with L (lineto) for all but
-                            # the first segment
-                            if not path_commands:
-                                path_commands.append(d_attr)
-                            else:
-                                # Replace leading M with L to continue the path
-                                d_attr = d_attr.replace('M', 'L', 1)
-                                path_commands.append(d_attr)
-                    elif '<line' in elem:
-                        # Convert line to path commands
-                        x1_match = re.search(r'x1="([^"]*)"', elem)
-                        y1_match = re.search(r'y1="([^"]*)"', elem)
-                        x2_match = re.search(r'x2="([^"]*)"', elem)
-                        y2_match = re.search(r'y2="([^"]*)"', elem)
-                        if x1_match and y1_match and x2_match and y2_match:
-                            if not path_commands:
-                                path_commands.append(
-                                    f"M {
-                                        x1_match.group(1)},{
-                                        y1_match.group(1)} L {
-                                        x2_match.group(1)},{
-                                        y2_match.group(1)}")
-                            else:
-                                # Continue path with L instead of M
-                                path_commands.append(
-                                    f"L {
-                                        x2_match.group(1)},{
-                                        y2_match.group(1)}")
-
-                # Write combined continuous path with outline styling
-                if path_commands:
-                    combined_path = ' '.join(path_commands) + ' Z'
-                    f.write(
-                        f'    <path d="{combined_path}" fill="none" stroke="blue" stroke-width="0.2" />\n')
+                f.write(
+                    f'    <path d="{outline_path}" fill="none" stroke="blue" stroke-width="0.2" />\n')
                 f.write('  </g>\n')
 
             f.write("</g>\n")
