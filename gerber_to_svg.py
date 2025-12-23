@@ -7,7 +7,7 @@ import cv2
 from pygerber.gerberx3.tokenizer.tokenizer import Tokenizer
 from pygerber.gerberx3.parser2.parser2 import Parser2
 from pygerber.gerberx3.parser2.commands2.line2 import Line2
-from pygerber.gerberx3.parser2.commands2.arc2 import Arc2
+from pygerber.gerberx3.parser2.commands2.arc2 import Arc2, CCArc2
 from pygerber.gerberx3.parser2.commands2.flash2 import Flash2
 from pygerber.gerberx3.parser2.commands2.region2 import Region2
 from pygerber.gerberx3.parser2.apertures2.circle2 import Circle2
@@ -70,13 +70,18 @@ class GerberToSvg:
         Build SVG path data from outline elements, properly grouping connected
         segments into separate closed subpaths. Returns None if no outline
         elements.
+        
+        Segments can be either lines (start, end) or arcs (start, end, arc_params)
+        where arc_params is a dict with rx, ry, large_arc_flag, sweep_flag.
         """
         import re
 
         if not hasattr(self, 'outline_elements') or len(self.outline_elements) == 0:
             return None
 
-        # Extract all line segments as (start_point, end_point) tuples
+        # Extract all segments as tuples:
+        # Line: ((x1, y1), (x2, y2))
+        # Arc: ((x1, y1), (x2, y2), {'rx': rx, 'ry': ry, 'large_arc': flag, 'sweep': flag})
         segments = []
         tolerance = 1e-6  # Tolerance for point matching
 
@@ -86,27 +91,46 @@ class GerberToSvg:
                 match = re.search(r'd="([^"]*)"', elem)
                 if match:
                     d_attr = match.group(1)
-                    # Parse the path: look for M x,y L x,y patterns
+                    # Parse the path: look for M, L, A, Z commands
                     # Split by command letters
-                    commands = re.findall(r'([MLZmlz])([^MLZmlz]*)', d_attr)
+                    commands = re.findall(r'([MLAZmlaz])([^MLAZmlaz]*)', d_attr)
                     current_x, current_y = 0.0, 0.0
                     start_x, start_y = 0.0, 0.0
                     for cmd, args in commands:
                         args = args.strip()
                         if cmd == 'M':
-                            coords = re.findall(r'[-+]?[0-9]*\.?[0-9]+', args)
+                            coords = re.findall(r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?', args)
                             if len(coords) >= 2:
                                 current_x, current_y = float(coords[0]), float(coords[1])
                                 start_x, start_y = current_x, current_y
                         elif cmd == 'L':
-                            coords = re.findall(r'[-+]?[0-9]*\.?[0-9]+', args)
+                            coords = re.findall(r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?', args)
                             if len(coords) >= 2:
                                 new_x, new_y = float(coords[0]), float(coords[1])
                                 segments.append(((current_x, current_y), (new_x, new_y)))
                                 current_x, current_y = new_x, new_y
+                        elif cmd == 'A':
+                            # Arc: rx ry x-axis-rotation large-arc-flag sweep-flag x y
+                            coords = re.findall(r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?', args)
+                            if len(coords) >= 7:
+                                rx = float(coords[0])
+                                ry = float(coords[1])
+                                # coords[2] is x-axis-rotation (usually 0)
+                                large_arc = int(float(coords[3]))
+                                sweep = int(float(coords[4]))
+                                new_x = float(coords[5])
+                                new_y = float(coords[6])
+                                arc_params = {
+                                    'rx': rx,
+                                    'ry': ry,
+                                    'large_arc': large_arc,
+                                    'sweep': sweep
+                                }
+                                segments.append(((current_x, current_y), (new_x, new_y), arc_params))
+                                current_x, current_y = new_x, new_y
                         elif cmd == 'Z':
                             # Close path back to start
-                            if (current_x, current_y) != (start_x, start_y):
+                            if abs(current_x - start_x) > tolerance or abs(current_y - start_y) > tolerance:
                                 segments.append(((current_x, current_y), (start_x, start_y)))
                             current_x, current_y = start_x, start_y
             elif '<line' in elem:
@@ -124,6 +148,24 @@ class GerberToSvg:
 
         def points_equal(p1, p2):
             return abs(p1[0] - p2[0]) < tolerance and abs(p1[1] - p2[1]) < tolerance
+        
+        def get_start(seg):
+            return seg[0]
+        
+        def get_end(seg):
+            return seg[1]
+        
+        def reverse_segment(seg):
+            """Reverse a segment (swap start/end). For arcs, also flip the sweep flag."""
+            if len(seg) == 3:
+                # Arc segment: (start, end, arc_params)
+                arc_params = seg[2].copy()
+                # When reversing an arc, the sweep direction flips
+                arc_params['sweep'] = 1 - arc_params['sweep']
+                return (seg[1], seg[0], arc_params)
+            else:
+                # Line segment
+                return (seg[1], seg[0])
 
         # Group segments into closed shapes by connecting endpoints
         shapes = []
@@ -136,19 +178,19 @@ class GerberToSvg:
 
             while changed:
                 changed = False
-                shape_start = shape[0][0]
-                shape_end = shape[-1][1]
+                shape_start = get_start(shape[0])
+                shape_end = get_end(shape[-1])
 
                 # Look for segments that connect to the end of the shape
                 for i, seg in enumerate(remaining):
-                    if points_equal(shape_end, seg[0]):
+                    if points_equal(shape_end, get_start(seg)):
                         # Segment connects at its start to shape end
                         shape.append(remaining.pop(i))
                         changed = True
                         break
-                    elif points_equal(shape_end, seg[1]):
+                    elif points_equal(shape_end, get_end(seg)):
                         # Segment connects at its end to shape end (reverse it)
-                        shape.append((seg[1], seg[0]))
+                        shape.append(reverse_segment(seg))
                         remaining.pop(i)
                         changed = True
                         break
@@ -156,14 +198,14 @@ class GerberToSvg:
                 if not changed:
                     # Try connecting to the start of the shape
                     for i, seg in enumerate(remaining):
-                        if points_equal(shape_start, seg[1]):
+                        if points_equal(shape_start, get_end(seg)):
                             # Segment end connects to shape start
                             shape.insert(0, remaining.pop(i))
                             changed = True
                             break
-                        elif points_equal(shape_start, seg[0]):
+                        elif points_equal(shape_start, get_start(seg)):
                             # Segment start connects to shape start (reverse it)
-                            shape.insert(0, (seg[1], seg[0]))
+                            shape.insert(0, reverse_segment(seg))
                             remaining.pop(i)
                             changed = True
                             break
@@ -176,10 +218,17 @@ class GerberToSvg:
             if not shape:
                 continue
             # Start with M to the first point
-            start = shape[0][0]
+            start = get_start(shape[0])
             subpath = f"M {start[0]},{start[1]}"
             for seg in shape:
-                subpath += f" L {seg[1][0]},{seg[1][1]}"
+                end = get_end(seg)
+                if len(seg) == 3:
+                    # Arc segment
+                    arc = seg[2]
+                    subpath += f" A {arc['rx']},{arc['ry']} 0 {arc['large_arc']} {arc['sweep']} {end[0]},{end[1]}"
+                else:
+                    # Line segment
+                    subpath += f" L {end[0]},{end[1]}"
             subpath += " Z"
             path_parts.append(subpath)
 
@@ -489,7 +538,8 @@ class GerberToSvg:
             angle_diff = angle2 - angle1
 
             # Normalize angle difference
-            is_clockwise = getattr(arc, 'is_clockwise', False)
+            # CCArc2 is counter-clockwise (G03), Arc2 is clockwise (G02)
+            is_clockwise = not isinstance(arc, CCArc2)
             if is_clockwise:
                 if angle_diff > 0:
                     angle_diff -= 2 * math.pi
@@ -543,7 +593,8 @@ class GerberToSvg:
                 angle2 = math.atan2(y2 - center_y, x2 - center_x)
                 angle_diff = angle2 - angle1
 
-                is_clockwise = getattr(segment, 'is_clockwise', False)
+                # CCArc2 is counter-clockwise (G03), Arc2 is clockwise (G02)
+                is_clockwise = not isinstance(segment, CCArc2)
                 if is_clockwise:
                     if angle_diff > 0:
                         angle_diff -= 2 * math.pi
