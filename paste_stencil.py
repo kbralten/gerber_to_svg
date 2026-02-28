@@ -302,7 +302,56 @@ def _inject_alignment_circles(svg_text, corners, jig_rect, circle_r=5.0):
     return svg_text
 
 
-def generate_stencil_svg(paste_file, svg_output, corner_radius, outline_corners, jig_rect):
+def _scale_pads(svg_text, scale):
+    """Scale each pad path in the copper group about its bounding-box centre.
+
+    Wraps each <path> inside <g id="copper"> with an SVG transform of the form
+    translate(cx,cy) scale(s,s) translate(-cx,-cy), which scales the pad in
+    place. Use values below 1.0 to compensate for thicker stencils that would
+    otherwise deposit too much paste.
+    """
+    if abs(scale - 1.0) < 1e-9:
+        return svg_text
+
+    NUM = r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?'
+    cmd_re = re.compile(r'([MLAZmlaz])([^MLAZmlaz]*)')
+
+    def path_bbox_center(d):
+        """Return the bounding-box centre of all endpoint coordinates in path d."""
+        xs, ys = [], []
+        for cmd, args in cmd_re.findall(d):
+            nums = [float(v) for v in re.findall(NUM, args)]
+            if cmd in ('M', 'L') and len(nums) >= 2:
+                xs.append(nums[0])
+                ys.append(nums[1])
+            elif cmd == 'A' and len(nums) >= 7:
+                xs.append(nums[5])
+                ys.append(nums[6])
+        if not xs:
+            return None, None
+        return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+
+    def transform_path(m):
+        tag = m.group(0)
+        d_m = re.search(r'd="([^"]*)"', tag)
+        if not d_m:
+            return tag
+        cx, cy = path_bbox_center(d_m.group(1))
+        if cx is None:
+            return tag
+        t = (f'translate({cx:.5f},{cy:.5f}) scale({scale},{scale})'
+             f' translate({-cx:.5f},{-cy:.5f})')
+        if 'transform=' in tag:
+            return re.sub(r'transform="[^"]*"', f'transform="{t}"', tag)
+        return tag.replace('<path ', f'<path transform="{t}" ', 1)
+
+    def scale_copper_group(m):
+        return re.sub(r'<path\b[^/]*/>', transform_path, m.group(0))
+
+    return re.sub(r'<g id="copper">.*?</g>', scale_copper_group, svg_text, flags=re.DOTALL)
+
+
+def generate_stencil_svg(paste_file, svg_output, corner_radius, outline_corners, jig_rect, pad_scale=1.0):
     """Run GerberToSvg on the paste layer then post-process the output SVG."""
     converter = GerberToSvg(
         input_file=paste_file,
@@ -316,8 +365,9 @@ def generate_stencil_svg(paste_file, svg_output, corner_radius, outline_corners,
     with open(svg_output, 'r', encoding='utf-8') as f:
         svg_text = f.read()
 
-    # Expand canvas and inject alignment circles + jig perimeter rect
+    # Expand canvas, scale pads, and inject alignment circles + jig perimeter rect
     svg_text = _expand_viewbox(svg_text, outline_corners)
+    svg_text = _scale_pads(svg_text, pad_scale)
     svg_text = _inject_alignment_circles(svg_text, outline_corners, jig_rect)
 
     with open(svg_output, 'w', encoding='utf-8') as f:
@@ -445,6 +495,17 @@ def main():
             "board drops in without force (default: 0.1)."
         ),
     )
+    parser.add_argument(
+        "--pad-scale",
+        type=float,
+        default=1.0,
+        metavar="FACTOR",
+        help=(
+            "Scale each pad about its centre before cutting (default: 1.0, no change). "
+            "Use values below 1.0 to reduce paste deposition for thicker stencils, "
+            "e.g. 0.9 for a 10%% area reduction."
+        ),
+    )
     args = parser.parse_args()
 
     base = os.path.splitext(args.paste_file)[0]
@@ -475,7 +536,7 @@ def main():
     # --- Generate stencil SVG ---
     jig_rect = (min_x - 30.0, min_y - 30.0, (max_x - min_x) + 60.0, (max_y - min_y) + 60.0)
     print(f"\nRendering stencil SVG: {svg_output}")
-    generate_stencil_svg(args.paste_file, svg_output, args.corner_radius, corners, jig_rect)
+    generate_stencil_svg(args.paste_file, svg_output, args.corner_radius, corners, jig_rect, args.pad_scale)
 
     # --- Generate jig STL ---
     print(f"\nBuilding jig STL: {stl_output}")

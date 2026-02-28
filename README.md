@@ -122,6 +122,7 @@ This auto-generates two files next to the paste Gerber base name:
 	- `--board-thickness MM` — jig frame height / PCB thickness (default `1.6`).
 	- `--peg-tolerance MM` — clearance subtracted from the 10 mm hole diameter to size pegs in the STL (default `0.2`).
 	- `--jig-tolerance MM` — expand the PCB cutout in the jig by this amount so the board drops in easily (default `0.1`).
+	- `--pad-scale FACTOR` — scale each pad about its centre (default `1.0`). Values below 1.0 reduce paste volume; e.g. `0.8` for a 20% area reduction when using a thicker-than-nominal stencil.
 
 - **Notes**:
 	- The stencil SVG is produced by the same pipeline as `gerber_to_svg.py` and then post-processed to add alignment features.
