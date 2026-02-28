@@ -1,6 +1,6 @@
-**Gerber to SVG/PNG**
+## Gerber to SVG/PNG
 
-- **Purpose**: Convert Gerber files to clean SVG paths suitable for laser cutters, or export raster PNG renderings.
+**Purpose**: Convert Gerber files to clean SVG paths suitable for laser cutters, or export raster PNG renderings.
 
 **Quick Start**
 - **Install dependencies** (recommended in a virtual environment):
@@ -96,6 +96,34 @@ When inverted, the output shows a filled rectangle (bounded by the outline if pr
 - If PNG export fails, ensure `opencv-python` and `Pillow` are installed. The script no longer depends on native Cairo.
 - Large boards rendered at high DPI may produce large PNGs. If memory or time is a problem, consider decreasing the DPI inside the script (search for the `dpi` variable inside `render_and_trace`).
 
-**Next steps / Tips**
-- If you want a different output filename, rename the generated file after conversion or modify the script to accept an explicit output path.
-- To tune contour simplification, modify the polygon approximation epsilon in `contour_to_path()`.
+## paste_stencil.py — Solder-paste stencil + jig generator
+
+**Purpose**: Produce a solder-paste stencil SVG (pad geometry + alignment holes) and
+	a 3‑D printable jig STL that tightly locates the PCB and provides alignment pegs.
+
+- **Install extra deps** (required for STL generation):
+
+```
+python -m pip install trimesh shapely manifold3d mapbox-earcut
+```
+
+- **Basic usage**:
+
+```
+python paste_stencil.py <paste-gerber.gbr> <outline-gerber.gbr>
+```
+
+This auto-generates two files next to the paste Gerber base name:
+- `<base>_stencil.svg` — stencil SVG (contains pad geometry, 10mm alignment circles, and a rectangle for the jig outer perimeter)
+- `<base>_jig.stl` — monolithic STL containing a frame with the PCB pocket and four alignment pegs
+
+- **Options**:
+	- `--corner-radius MM` — apply rounding to traced pad corners in the stencil SVG (default `0.0`).
+	- `--board-thickness MM` — jig frame height / PCB thickness (default `1.6`).
+	- `--peg-tolerance MM` — clearance subtracted from the 10 mm hole diameter to size pegs in the STL (default `0.2`).
+	- `--jig-tolerance MM` — expand the PCB cutout in the jig by this amount so the board drops in easily (default `0.1`).
+
+- **Notes**:
+	- The stencil SVG is produced by the same pipeline as `gerber_to_svg.py` and then post-processed to add alignment features.
+	- The jig STL uses the board outline (approximating arcs to polylines) to create a pocket; if the outline cannot be parsed a bounding-box pocket is used instead.
+	- The STL is exported as a single watertight mesh (frame + pegs unioned) suitable for 3D printing.
