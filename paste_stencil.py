@@ -282,11 +282,11 @@ def _inject_alignment_circles(svg_text, corners, jig_rect, circle_r=5.0):
     rx, ry, rw, rh = jig_rect
     rect_element = (
         f'  <rect x="{rx:.4f}" y="{ry:.4f}" width="{rw:.4f}" height="{rh:.4f}" '
-        f'fill="none" stroke="black" stroke-width="0.5" />'
+        f'fill="none" stroke="blue" stroke-width="0.5" />'
     )
     circle_elements = '\n'.join(
         f'  <circle cx="{cx:.4f}" cy="{cy:.4f}" r="{circle_r}" '
-        f'fill="none" stroke="black" stroke-width="0.5" />'
+        f'fill="none" stroke="blue" stroke-width="0.5" />'
         for cx, cy in corners
     )
     new_elements = rect_element + '\n' + circle_elements
